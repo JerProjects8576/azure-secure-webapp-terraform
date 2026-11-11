@@ -1,0 +1,128 @@
+name: Terraform
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Least privilege for the workflow itself.
+permissions:
+  contents: read
+
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Quality gate. Needs no Azure credentials, so it runs on every commit and
+  # on pull requests from forks.
+  # ---------------------------------------------------------------------------
+  validate:
+    name: Format, validate, test, scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.9"
+
+      - name: Check formatting
+        run: terraform fmt -check -recursive
+
+      - name: Initialise (without remote state)
+        run: terraform init -backend=false
+
+      - name: Validate
+        run: terraform validate
+
+      - name: Run tests (mocked provider, nothing is deployed)
+        run: terraform test
+
+      - name: Security scan
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: .
+          framework: terraform
+          quiet: true
+          download_external_modules: false
+
+  # ---------------------------------------------------------------------------
+  # Plan on pull requests: shows exactly what would change before it is merged.
+  # Only runs once the Azure connection (OIDC) is configured - see README.
+  # ---------------------------------------------------------------------------
+  plan:
+    name: Plan
+    needs: validate
+    if: github.event_name == 'pull_request' && vars.AZURE_CLIENT_ID != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # required to log in to Azure with OIDC
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_USE_AZUREAD: "true"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.9"
+
+      - name: Initialise with remote state
+        run: >
+          terraform init
+          -backend-config="resource_group_name=${{ vars.TFSTATE_RESOURCE_GROUP }}"
+          -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}"
+          -backend-config="container_name=tfstate"
+          -backend-config="key=secure-webapp.dev.tfstate"
+
+      - name: Plan
+        run: terraform plan -var-file=environments/dev.tfvars -out=tfplan
+
+  # ---------------------------------------------------------------------------
+  # Apply after merge to main. The "production" environment can require a
+  # manual approval in the repository settings.
+  # ---------------------------------------------------------------------------
+  apply:
+    name: Apply
+    needs: validate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AZURE_CLIENT_ID != ''
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_USE_AZUREAD: "true"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.9"
+
+      - name: Initialise with remote state
+        run: >
+          terraform init
+          -backend-config="resource_group_name=${{ vars.TFSTATE_RESOURCE_GROUP }}"
+          -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}"
+          -backend-config="container_name=tfstate"
+          -backend-config="key=secure-webapp.dev.tfstate"
+
+      - name: Apply
+        run: terraform apply -var-file=environments/dev.tfvars -auto-approve
