@@ -1,0 +1,6 @@
+# Copy to backend.hcl and fill in the values printed by scripts/bootstrap-state.sh
+resource_group_name  = "rg-tfstate"
+storage_account_name = "sttfstate<unique>"
+container_name       = "tfstate"
+key                  = "secure-webapp.dev.tfstate"
+use_azuread_auth     = true
