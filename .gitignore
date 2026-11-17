@@ -1,0 +1,19 @@
+# Local Terraform working files
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfplan
+tfplan
+
+# Real backend settings and personal variable files stay out of Git
+backend.hcl
+*.auto.tfvars
+terraform.tfvars
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+.DS_Store
